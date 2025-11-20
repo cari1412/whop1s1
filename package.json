@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node scraper.js",
+    "postinstall": "npx playwright install chromium --with-deps",
     "test": "node scraper.js"
   },
   "keywords": [],
