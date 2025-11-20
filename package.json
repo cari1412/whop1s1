@@ -1,0 +1,19 @@
+{
+  "name": "whop1s1",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node scraper.js",
+    "test": "node scraper.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.84.0",
+    "dotenv": "^17.2.3",
+    "playwright": "^1.56.1"
+  }
+}
