@@ -35,8 +35,8 @@ async function scrapeWhopPulse() {
       timeout: 30000
     });
     
-    // Ждем загрузки данных
-    await page.waitForTimeout(5000);
+    // Ждем загрузки данных (замена waitForTimeout)
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
     // Извлекаем данные
     const data = await page.evaluate(() => {
@@ -48,7 +48,6 @@ async function scrapeWhopPulse() {
       
       if (searchesSection) {
         const lines = searchesSection[1].split('\n');
-        let currentSearch = null;
         
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i].trim();
@@ -131,8 +130,9 @@ async function scrapeWhopPulse() {
     console.log('');
     console.log('💳 NEW TRANSACTIONS:');
     data.transactions.forEach((tx, idx) => {
-      console.log(`  ${idx + 1}. ${tx.name} - ${tx.price}`);
+      console.log(`  ${idx + 1}. ${tx.name} - ${tx.price || 'N/A'}`);
     });
+    console.log('');
     
     // Сохраняем каждый поиск отдельно
     if (data.searches.length > 0) {
@@ -160,8 +160,13 @@ async function scrapeWhopPulse() {
       }
     }
     
+    if (data.searches.length === 0 && data.transactions.length === 0) {
+      console.log('⚠️  Не найдено данных для сохранения');
+    }
+    
   } catch (error) {
     console.error('❌ Ошибка:', error.message);
+    console.error('Stack:', error.stack);
   } finally {
     if (browser) {
       await browser.close();
