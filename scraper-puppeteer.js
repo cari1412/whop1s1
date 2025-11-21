@@ -35,8 +35,9 @@ async function scrapeWhopPulse() {
       timeout: 30000
     });
     
-    // Ждем загрузки данных (замена waitForTimeout)
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // Ждем дольше, чтобы накопилось больше данных (30 секунд вместо 5)
+    console.log('⏳ Ожидание накопления данных (30 сек)...');
+    await new Promise(resolve => setTimeout(resolve, 30000));
     
     // Извлекаем данные
     const data = await page.evaluate(() => {
@@ -65,8 +66,8 @@ async function scrapeWhopPulse() {
             });
           }
           
-          // Берем максимум 10 последних поисков
-          if (searches.length >= 10) break;
+          // Берем больше поисков - до 50
+          if (searches.length >= 50) break;
         }
       }
       
@@ -87,11 +88,11 @@ async function scrapeWhopPulse() {
           }
           
           // Проверяем, есть ли цена в строке
-          const priceMatch = line.match(/(\$|€|£|A\$|C\$)([\d,.]+)/);
+          const priceMatch = line.match(/(\$|€|£|A\$|C\$|₹|¥)([\d,.]+)/);
           
           if (priceMatch) {
             // Это строка с ценой
-            currentTransaction.price = priceMatch[0]; // Например: "$20.00" или "A$10.00"
+            currentTransaction.price = priceMatch[0];
             currentTransaction.amount = parseFloat(priceMatch[2].replace(',', ''));
             currentTransaction.currency = priceMatch[1];
             
@@ -103,13 +104,24 @@ async function scrapeWhopPulse() {
               });
               currentTransaction = {};
             }
-          } else if (line.length > 0) {
+          } else if (line.length > 0 && !line.match(/New whops/i)) {
             // Это название транзакции
             currentTransaction.name = line;
           }
           
-          // Берем максимум 10 последних транзакций
-          if (transactions.length >= 10) break;
+          // Берем больше транзакций - до 50
+          if (transactions.length >= 50) break;
+        }
+        
+        // Если осталась незавершенная транзакция без цены
+        if (currentTransaction.name && !transactions.find(t => t.name === currentTransaction.name)) {
+          transactions.push({
+            name: currentTransaction.name,
+            price: null,
+            amount: null,
+            currency: null,
+            timestamp: new Date().toISOString()
+          });
         }
       }
       
@@ -122,16 +134,22 @@ async function scrapeWhopPulse() {
     
     console.log('📊 Собранные данные:');
     console.log('');
-    console.log('🔍 NEW SEARCHES:');
-    data.searches.forEach((search, idx) => {
+    console.log(`🔍 NEW SEARCHES (${data.searches.length}):`);
+    data.searches.slice(0, 10).forEach((search, idx) => {
       console.log(`  ${idx + 1}. "${search.keyword}"`);
     });
+    if (data.searches.length > 10) {
+      console.log(`  ... и ещё ${data.searches.length - 10}`);
+    }
     
     console.log('');
-    console.log('💳 NEW TRANSACTIONS:');
-    data.transactions.forEach((tx, idx) => {
+    console.log(`💳 NEW TRANSACTIONS (${data.transactions.length}):`);
+    data.transactions.slice(0, 10).forEach((tx, idx) => {
       console.log(`  ${idx + 1}. ${tx.name} - ${tx.price || 'N/A'}`);
     });
+    if (data.transactions.length > 10) {
+      console.log(`  ... и ещё ${data.transactions.length - 10}`);
+    }
     console.log('');
     
     // Сохраняем каждый поиск отдельно
@@ -166,7 +184,6 @@ async function scrapeWhopPulse() {
     
   } catch (error) {
     console.error('❌ Ошибка:', error.message);
-    console.error('Stack:', error.stack);
   } finally {
     if (browser) {
       await browser.close();
@@ -176,8 +193,8 @@ async function scrapeWhopPulse() {
 
 async function main() {
   console.log('╔════════════════════════════════════════╗');
-  console.log('║   🎬 Whop Pulse Monitor v2.0         ║');
-  console.log('║   Searches & Transactions Only        ║');
+  console.log('║   🎬 Whop Pulse Monitor v2.1         ║');
+  console.log('║   Extended Data Collection            ║');
   console.log('╚════════════════════════════════════════╝');
   console.log(`⏱️  Интервал: ${process.env.SCRAPE_INTERVAL / 1000} секунд`);
   console.log(`🗄️  База данных: ${process.env.SUPABASE_URL}`);
