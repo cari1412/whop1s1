@@ -42,91 +42,121 @@ async function scrapeWhopPulse() {
     const data = await page.evaluate(() => {
       const bodyText = document.body.innerText;
       
-      // Парсим статистику (12.0M+ Active users, и т.д.)
-      const statsPattern = /(\d+\.?\d*[MK]\+?)\s*(Active users|Creators|Products)/gi;
-      const stats = {};
-      let match;
+      // === ПАРСИМ NEW SEARCHES (ключевые слова) ===
+      const searchesSection = bodyText.match(/New searches\n([\s\S]+?)(?=New transactions|$)/i);
+      let searches = [];
       
-      while ((match = statsPattern.exec(bodyText)) !== null) {
-        const value = match[1];
-        const label = match[2].toLowerCase();
+      if (searchesSection) {
+        const lines = searchesSection[1].split('\n');
+        let currentSearch = null;
         
-        if (label.includes('active')) {
-          stats.activeUsers = value;
-        } else if (label.includes('creator')) {
-          stats.creators = value;
-        } else if (label.includes('product')) {
-          stats.products = value;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          
+          // Пропускаем временные метки
+          if (line.match(/Just now|\d+[smh] ago/i)) {
+            continue;
+          }
+          
+          // Если есть текст - это поисковый запрос
+          if (line && !line.match(/New transactions/i)) {
+            searches.push({
+              keyword: line,
+              timestamp: new Date().toISOString()
+            });
+          }
+          
+          // Берем максимум 10 последних поисков
+          if (searches.length >= 10) break;
         }
       }
       
-      // Парсим новые поиски
-      const searchesSection = bodyText.match(/New searches\n([\s\S]+?)(?=New transactions|$)/i);
-      const newSearches = searchesSection ? 
-        searchesSection[1].split('\n')
-          .filter(line => line.trim() && !line.match(/\d+[smh] ago|Just now/))
-          .slice(0, 5)
-        : [];
-      
-      // Парсим новые транзакции
+      // === ПАРСИМ NEW TRANSACTIONS (название + цена) ===
       const transactionsSection = bodyText.match(/New transactions\n([\s\S]+?)(?=New whops|$)/i);
-      const newTransactions = transactionsSection ?
-        transactionsSection[1].split('\n')
-          .filter(line => line.trim() && !line.match(/Just now|\$\d+/))
-          .slice(0, 5)
-        : [];
+      let transactions = [];
       
-      // Парсим новые whops
-      const whopsSection = bodyText.match(/New whops\n([\s\S]+?)$/i);
-      const newWhops = whopsSection ?
-        whopsSection[1].split('\n')
-          .filter(line => line.trim() && !line.match(/\d+[mh] ago/))
-          .slice(0, 5)
-        : [];
+      if (transactionsSection) {
+        const lines = transactionsSection[1].split('\n');
+        let currentTransaction = {};
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          
+          // Пропускаем пустые строки и временные метки
+          if (!line || line.match(/Just now|\d+[smh] ago/i)) {
+            continue;
+          }
+          
+          // Проверяем, есть ли цена в строке
+          const priceMatch = line.match(/(\$|€|£|A\$|C\$)([\d,.]+)/);
+          
+          if (priceMatch) {
+            // Это строка с ценой
+            currentTransaction.price = priceMatch[0]; // Например: "$20.00" или "A$10.00"
+            currentTransaction.amount = parseFloat(priceMatch[2].replace(',', ''));
+            currentTransaction.currency = priceMatch[1];
+            
+            // Если есть название, сохраняем транзакцию
+            if (currentTransaction.name) {
+              transactions.push({
+                ...currentTransaction,
+                timestamp: new Date().toISOString()
+              });
+              currentTransaction = {};
+            }
+          } else if (line.length > 0) {
+            // Это название транзакции
+            currentTransaction.name = line;
+          }
+          
+          // Берем максимум 10 последних транзакций
+          if (transactions.length >= 10) break;
+        }
+      }
       
       return {
-        ...stats,
-        newSearches: newSearches.join(', '),
-        newTransactions: newTransactions.join(', '),
-        newWhops: newWhops.join(', '),
-        fullText: bodyText.substring(0, 1000),
-        timestamp: new Date().toISOString()
+        searches,
+        transactions,
+        scrapedAt: new Date().toISOString()
       };
     });
     
     console.log('📊 Собранные данные:');
-    console.log('  👥 Active Users:', data.activeUsers || 'N/A');
-    console.log('  🎨 Creators:', data.creators || 'N/A');
-    console.log('  📦 Products:', data.products || 'N/A');
-    console.log('  🔍 New Searches:', data.newSearches ? data.newSearches.substring(0, 50) + '...' : 'N/A');
-    console.log('  💳 New Transactions:', data.newTransactions ? data.newTransactions.substring(0, 50) + '...' : 'N/A');
-    console.log('  🆕 New Whops:', data.newWhops ? data.newWhops.substring(0, 50) + '...' : 'N/A');
+    console.log('');
+    console.log('🔍 NEW SEARCHES:');
+    data.searches.forEach((search, idx) => {
+      console.log(`  ${idx + 1}. "${search.keyword}"`);
+    });
     
-    // Сохранение в Supabase
-    const { data: insertedData, error } = await supabase
-      .from('pulse_data')
-      .insert([{
-        active_users: data.activeUsers || null,
-        creators: data.creators || null,
-        products: data.products || null,
-        new_searches: data.newSearches || null,
-        new_transactions: data.newTransactions || null,
-        new_whops: data.newWhops || null,
-        raw_data: {
-          fullText: data.fullText,
-          timestamp: data.timestamp
-        }
-      }])
-      .select();
+    console.log('');
+    console.log('💳 NEW TRANSACTIONS:');
+    data.transactions.forEach((tx, idx) => {
+      console.log(`  ${idx + 1}. ${tx.name} - ${tx.price}`);
+    });
     
-    if (error) {
-      console.error('❌ Ошибка сохранения:', error);
-      console.log('\n💡 Совет: Отключи Row Level Security в Supabase');
-      console.log('   Путь: Table Editor → pulse_data → Settings → Enable RLS = OFF');
-    } else {
-      console.log('✅ Данные успешно сохранены!');
-      if (insertedData && insertedData[0]) {
-        console.log('   ID записи:', insertedData[0].id);
+    // Сохраняем каждый поиск отдельно
+    if (data.searches.length > 0) {
+      const { error: searchError } = await supabase
+        .from('searches')
+        .insert(data.searches);
+      
+      if (searchError) {
+        console.error('❌ Ошибка сохранения поисков:', searchError.message);
+      } else {
+        console.log(`✅ Сохранено ${data.searches.length} поисковых запросов`);
+      }
+    }
+    
+    // Сохраняем каждую транзакцию отдельно
+    if (data.transactions.length > 0) {
+      const { error: txError } = await supabase
+        .from('transactions')
+        .insert(data.transactions);
+      
+      if (txError) {
+        console.error('❌ Ошибка сохранения транзакций:', txError.message);
+      } else {
+        console.log(`✅ Сохранено ${data.transactions.length} транзакций`);
       }
     }
     
@@ -141,8 +171,8 @@ async function scrapeWhopPulse() {
 
 async function main() {
   console.log('╔════════════════════════════════════════╗');
-  console.log('║   🎬 Whop Pulse Monitor v1.0         ║');
-  console.log('║      Puppeteer Edition                ║');
+  console.log('║   🎬 Whop Pulse Monitor v2.0         ║');
+  console.log('║   Searches & Transactions Only        ║');
   console.log('╚════════════════════════════════════════╝');
   console.log(`⏱️  Интервал: ${process.env.SCRAPE_INTERVAL / 1000} секунд`);
   console.log(`🗄️  База данных: ${process.env.SUPABASE_URL}`);
