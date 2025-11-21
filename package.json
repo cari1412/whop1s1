@@ -4,9 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node scraper.js",
-    "postinstall": "npx playwright install chromium --with-deps",
-    "test": "node scraper.js"
+    "start": "node scraper-puppeteer.js"
   },
   "keywords": [],
   "author": "",
@@ -15,6 +13,6 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.84.0",
     "dotenv": "^17.2.3",
-    "playwright": "^1.56.1"
+    "puppeteer": "^24.31.0"
   }
 }
