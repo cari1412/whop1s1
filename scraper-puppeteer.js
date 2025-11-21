@@ -8,8 +8,12 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// Хранилище для уникальных данных
+const seenSearches = new Set();
+const seenTransactions = new Set();
+
 async function scrapeWhopPulse() {
-  console.log('🚀 Запуск скрапера...');
+  console.log('🚀 Запуск расширенного скрапинга...');
   
   let browser;
   try {
@@ -35,151 +39,157 @@ async function scrapeWhopPulse() {
       timeout: 30000
     });
     
-    // Ждем дольше, чтобы накопилось больше данных (30 секунд вместо 5)
-    console.log('⏳ Ожидание накопления данных (30 сек)...');
-    await new Promise(resolve => setTimeout(resolve, 30000));
+    const allSearches = [];
+    const allTransactions = [];
     
-    // Извлекаем данные
-    const data = await page.evaluate(() => {
-      const bodyText = document.body.innerText;
+    // Мониторим страницу 4 минуты (240 секунд), собирая данные каждые 10 секунд
+    const iterations = 24; // 24 * 10сек = 240 секунд
+    
+    console.log(`⏳ Мониторинг страницы в течение ${iterations * 10} секунд...`);
+    
+    for (let i = 0; i < iterations; i++) {
+      await new Promise(resolve => setTimeout(resolve, 10000));
       
-      // === ПАРСИМ NEW SEARCHES (ключевые слова) ===
-      const searchesSection = bodyText.match(/New searches\n([\s\S]+?)(?=New transactions|$)/i);
-      let searches = [];
-      
-      if (searchesSection) {
-        const lines = searchesSection[1].split('\n');
+      const data = await page.evaluate(() => {
+        const bodyText = document.body.innerText;
         
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
+        // Парсим поиски
+        const searchesSection = bodyText.match(/New searches\n([\s\S]+?)(?=New transactions|$)/i);
+        let searches = [];
+        
+        if (searchesSection) {
+          const lines = searchesSection[1].split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line && !line.match(/Just now|\d+[smh] ago|New transactions/i)) {
+              searches.push(line);
+            }
+            if (searches.length >= 20) break;
+          }
+        }
+        
+        // Парсим транзакции
+        const transactionsSection = bodyText.match(/New transactions\n([\s\S]+?)(?=New whops|$)/i);
+        let transactions = [];
+        
+        if (transactionsSection) {
+          const lines = transactionsSection[1].split('\n');
+          let currentTx = {};
           
-          // Пропускаем временные метки
-          if (line.match(/Just now|\d+[smh] ago/i)) {
-            continue;
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line || line.match(/Just now|\d+[smh] ago/i)) continue;
+            
+            const priceMatch = line.match(/(\$|€|£|A\$|C\$|₹|¥)([\d,.]+)/);
+            
+            if (priceMatch) {
+              currentTx.price = priceMatch[0];
+              currentTx.amount = parseFloat(priceMatch[2].replace(',', ''));
+              currentTx.currency = priceMatch[1];
+              
+              if (currentTx.name) {
+                transactions.push({...currentTx});
+                currentTx = {};
+              }
+            } else if (line.length > 0 && !line.match(/New whops/i)) {
+              currentTx.name = line;
+            }
+            
+            if (transactions.length >= 20) break;
           }
           
-          // Если есть текст - это поисковый запрос
-          if (line && !line.match(/New transactions/i)) {
-            searches.push({
-              keyword: line,
-              timestamp: new Date().toISOString()
+          if (currentTx.name) {
+            transactions.push({
+              name: currentTx.name,
+              price: null,
+              amount: null,
+              currency: null
             });
           }
-          
-          // Берем больше поисков - до 50
-          if (searches.length >= 50) break;
-        }
-      }
-      
-      // === ПАРСИМ NEW TRANSACTIONS (название + цена) ===
-      const transactionsSection = bodyText.match(/New transactions\n([\s\S]+?)(?=New whops|$)/i);
-      let transactions = [];
-      
-      if (transactionsSection) {
-        const lines = transactionsSection[1].split('\n');
-        let currentTransaction = {};
-        
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
-          
-          // Пропускаем пустые строки и временные метки
-          if (!line || line.match(/Just now|\d+[smh] ago/i)) {
-            continue;
-          }
-          
-          // Проверяем, есть ли цена в строке
-          const priceMatch = line.match(/(\$|€|£|A\$|C\$|₹|¥)([\d,.]+)/);
-          
-          if (priceMatch) {
-            // Это строка с ценой
-            currentTransaction.price = priceMatch[0];
-            currentTransaction.amount = parseFloat(priceMatch[2].replace(',', ''));
-            currentTransaction.currency = priceMatch[1];
-            
-            // Если есть название, сохраняем транзакцию
-            if (currentTransaction.name) {
-              transactions.push({
-                ...currentTransaction,
-                timestamp: new Date().toISOString()
-              });
-              currentTransaction = {};
-            }
-          } else if (line.length > 0 && !line.match(/New whops/i)) {
-            // Это название транзакции
-            currentTransaction.name = line;
-          }
-          
-          // Берем больше транзакций - до 50
-          if (transactions.length >= 50) break;
         }
         
-        // Если осталась незавершенная транзакция без цены
-        if (currentTransaction.name && !transactions.find(t => t.name === currentTransaction.name)) {
-          transactions.push({
-            name: currentTransaction.name,
-            price: null,
-            amount: null,
-            currency: null,
+        return { searches, transactions };
+      });
+      
+      // Добавляем только уникальные поиски
+      data.searches.forEach(keyword => {
+        if (!seenSearches.has(keyword)) {
+          seenSearches.add(keyword);
+          allSearches.push({
+            keyword,
             timestamp: new Date().toISOString()
           });
         }
+      });
+      
+      // Добавляем только уникальные транзакции
+      data.transactions.forEach(tx => {
+        const key = `${tx.name}|${tx.price}`;
+        if (!seenTransactions.has(key)) {
+          seenTransactions.add(key);
+          allTransactions.push({
+            ...tx,
+            timestamp: new Date().toISOString()
+          });
+        }
+      });
+      
+      // Логируем прогресс каждые 30 секунд
+      if ((i + 1) % 3 === 0) {
+        console.log(`   📈 Итерация ${i + 1}/${iterations}: Поиски ${allSearches.length}, Транзакции ${allTransactions.length}`);
       }
-      
-      return {
-        searches,
-        transactions,
-        scrapedAt: new Date().toISOString()
-      };
-    });
-    
-    console.log('📊 Собранные данные:');
-    console.log('');
-    console.log(`🔍 NEW SEARCHES (${data.searches.length}):`);
-    data.searches.slice(0, 10).forEach((search, idx) => {
-      console.log(`  ${idx + 1}. "${search.keyword}"`);
-    });
-    if (data.searches.length > 10) {
-      console.log(`  ... и ещё ${data.searches.length - 10}`);
     }
     
     console.log('');
-    console.log(`💳 NEW TRANSACTIONS (${data.transactions.length}):`);
-    data.transactions.slice(0, 10).forEach((tx, idx) => {
-      console.log(`  ${idx + 1}. ${tx.name} - ${tx.price || 'N/A'}`);
-    });
-    if (data.transactions.length > 10) {
-      console.log(`  ... и ещё ${data.transactions.length - 10}`);
-    }
+    console.log('📊 Итоговые собранные данные:');
+    console.log(`🔍 Уникальных поисков: ${allSearches.length}`);
+    console.log(`💳 Уникальных транзакций: ${allTransactions.length}`);
     console.log('');
     
-    // Сохраняем каждый поиск отдельно
-    if (data.searches.length > 0) {
-      const { error: searchError } = await supabase
-        .from('searches')
-        .insert(data.searches);
-      
-      if (searchError) {
-        console.error('❌ Ошибка сохранения поисков:', searchError.message);
+    // Показываем примеры
+    if (allSearches.length > 0) {
+      console.log('Примеры поисков:');
+      allSearches.slice(0, 5).forEach((s, i) => console.log(`  ${i + 1}. "${s.keyword}"`));
+      if (allSearches.length > 5) console.log(`  ... и ещё ${allSearches.length - 5}`);
+      console.log('');
+    }
+    
+    if (allTransactions.length > 0) {
+      console.log('Примеры транзакций:');
+      allTransactions.slice(0, 5).forEach((t, i) => console.log(`  ${i + 1}. ${t.name} - ${t.price || 'N/A'}`));
+      if (allTransactions.length > 5) console.log(`  ... и ещё ${allTransactions.length - 5}`);
+      console.log('');
+    }
+    
+    // Сохраняем в базу
+    if (allSearches.length > 0) {
+      const { error } = await supabase.from('searches').insert(allSearches);
+      if (error) {
+        console.error('❌ Ошибка сохранения поисков:', error.message);
       } else {
-        console.log(`✅ Сохранено ${data.searches.length} поисковых запросов`);
+        console.log(`✅ Сохранено ${allSearches.length} поисковых запросов`);
       }
     }
     
-    // Сохраняем каждую транзакцию отдельно
-    if (data.transactions.length > 0) {
-      const { error: txError } = await supabase
-        .from('transactions')
-        .insert(data.transactions);
-      
-      if (txError) {
-        console.error('❌ Ошибка сохранения транзакций:', txError.message);
+    if (allTransactions.length > 0) {
+      const { error } = await supabase.from('transactions').insert(allTransactions);
+      if (error) {
+        console.error('❌ Ошибка сохранения транзакций:', error.message);
       } else {
-        console.log(`✅ Сохранено ${data.transactions.length} транзакций`);
+        console.log(`✅ Сохранено ${allTransactions.length} транзакций`);
       }
     }
     
-    if (data.searches.length === 0 && data.transactions.length === 0) {
-      console.log('⚠️  Не найдено данных для сохранения');
+    // Очищаем старые записи из памяти (оставляем последние 1000)
+    if (seenSearches.size > 1000) {
+      const arr = Array.from(seenSearches);
+      seenSearches.clear();
+      arr.slice(-1000).forEach(s => seenSearches.add(s));
+    }
+    if (seenTransactions.size > 1000) {
+      const arr = Array.from(seenTransactions);
+      seenTransactions.clear();
+      arr.slice(-1000).forEach(t => seenTransactions.add(t));
     }
     
   } catch (error) {
@@ -193,23 +203,19 @@ async function scrapeWhopPulse() {
 
 async function main() {
   console.log('╔════════════════════════════════════════╗');
-  console.log('║   🎬 Whop Pulse Monitor v2.1         ║');
-  console.log('║   Extended Data Collection            ║');
+  console.log('║   🎬 Whop Pulse Monitor v3.0         ║');
+  console.log('║   Continuous Monitoring Mode          ║');
   console.log('╚════════════════════════════════════════╝');
   console.log(`⏱️  Интервал: ${process.env.SCRAPE_INTERVAL / 1000} секунд`);
   console.log(`🗄️  База данных: ${process.env.SUPABASE_URL}`);
   console.log('');
   
-  // Первый запуск
-  await scrapeWhopPulse();
-  
-  console.log('\n⏳ Ожидание следующего запуска...\n');
-  
-  // Цикл
-  setInterval(async () => {
+  // Запускаем непрерывно
+  while (true) {
     await scrapeWhopPulse();
-    console.log('\n⏳ Ожидание следующего запуска...\n');
-  }, parseInt(process.env.SCRAPE_INTERVAL) || 300000);
+    console.log('\n⏳ Ожидание 60 секунд перед следующим циклом...\n');
+    await new Promise(resolve => setTimeout(resolve, 60000));
+  }
 }
 
 process.on('SIGINT', () => {
