@@ -50,16 +50,16 @@ async function scrapeWhopPulse() {
     
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    // Оптимизация для Railway - отключаем ненужное
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const resourceType = req.resourceType();
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    // ВРЕМЕННО ОТКЛЮЧЕНО: блокировка ресурсов может ломать сайт
+    // await page.setRequestInterception(true);
+    // page.on('request', (req) => {
+    //   const resourceType = req.resourceType();
+    //   if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+    //     req.abort();
+    //   } else {
+    //     req.continue();
+    //   }
+    // });
     
     console.log('📡 Загрузка страницы...');
     await page.goto('https://whop.com/pulse/', {
@@ -68,7 +68,20 @@ async function scrapeWhopPulse() {
     });
     
     // Дополнительное ожидание для загрузки динамического контента
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    console.log('⏰ Ожидание загрузки динамического контента (15 сек)...');
+    await new Promise(resolve => setTimeout(resolve, 15000));
+    
+    // ДИАГНОСТИКА: Проверяем что видит браузер
+    const bodyText = await page.evaluate(() => document.body.innerText);
+    console.log('📋 Первые 500 символов страницы:');
+    console.log(bodyText.substring(0, 500));
+    console.log('...\n');
+    
+    // Проверяем наличие ключевых секций
+    const hasSearches = bodyText.includes('New searches');
+    const hasTransactions = bodyText.includes('New transactions');
+    console.log(`🔍 Найдено "New searches": ${hasSearches ? '✅' : '❌'}`);
+    console.log(`💳 Найдено "New transactions": ${hasTransactions ? '✅' : '❌'}\n`);
     
     const allSearches = [];
     const allTransactions = [];
