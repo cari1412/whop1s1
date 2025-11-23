@@ -12,10 +12,18 @@ const supabase = createClient(
 const seenSearches = new Set();
 const seenTransactions = new Set();
 
+// Константы для настройки
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 5000; // 5 секунд между повторами
+const PAGE_TIMEOUT = 60000; // 60 секунд вместо 30
+const CYCLE_DELAY = 60000; // 60 секунд между циклами
+
 async function scrapeWhopPulse() {
   console.log('🚀 Запуск расширенного скрапинга...');
   
-  let browser;
+  let browser = null;
+  let page = null;
+  
   try {
     browser = await puppeteer.launch({
       headless: 'new',
@@ -26,18 +34,41 @@ async function scrapeWhopPulse() {
         '--disable-gpu',
         '--no-first-run',
         '--no-zygote',
-        '--single-process'
-      ]
+        '--single-process',
+        '--disable-accelerated-2d-canvas',
+        '--disable-webgl',
+        '--disable-web-security'
+      ],
+      timeout: 30000
     });
     
-    const page = await browser.newPage();
+    page = await browser.newPage();
+    
+    // Устанавливаем таймаут для страницы
+    page.setDefaultTimeout(PAGE_TIMEOUT);
+    page.setDefaultNavigationTimeout(PAGE_TIMEOUT);
+    
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // Оптимизация для Railway - отключаем ненужное
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const resourceType = req.resourceType();
+      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
     
     console.log('📡 Загрузка страницы...');
     await page.goto('https://whop.com/pulse/', {
-      waitUntil: 'networkidle2',
-      timeout: 30000
+      waitUntil: 'domcontentloaded', // Быстрее чем networkidle2
+      timeout: PAGE_TIMEOUT
     });
+    
+    // Дополнительное ожидание для загрузки динамического контента
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
     const allSearches = [];
     const allTransactions = [];
@@ -49,6 +80,11 @@ async function scrapeWhopPulse() {
     
     for (let i = 0; i < iterations; i++) {
       await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      // Проверяем, что страница все еще активна
+      if (page.isClosed()) {
+        throw new Error('Page was closed unexpectedly');
+      }
       
       const data = await page.evaluate(() => {
         const bodyText = document.body.innerText;
@@ -192,40 +228,111 @@ async function scrapeWhopPulse() {
       arr.slice(-1000).forEach(t => seenTransactions.add(t));
     }
     
+    return true; // Успешное выполнение
+    
   } catch (error) {
     console.error('❌ Ошибка:', error.message);
+    return false; // Ошибка выполнения
   } finally {
+    // КРИТИЧЕСКИ ВАЖНО: всегда закрываем браузер
+    if (page && !page.isClosed()) {
+      try {
+        await page.close();
+      } catch (e) {
+        console.error('Ошибка закрытия страницы:', e.message);
+      }
+    }
     if (browser) {
-      await browser.close();
+      try {
+        await browser.close();
+      } catch (e) {
+        console.error('Ошибка закрытия браузера:', e.message);
+      }
     }
   }
 }
 
+async function scrapeWithRetry() {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    console.log(`\n🎯 Попытка ${attempt}/${MAX_RETRIES}`);
+    
+    const success = await scrapeWhopPulse();
+    
+    if (success) {
+      return true;
+    }
+    
+    if (attempt < MAX_RETRIES) {
+      console.log(`⏳ Ожидание ${RETRY_DELAY / 1000} секунд перед повтором...`);
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+    }
+  }
+  
+  console.error(`❌ Не удалось выполнить скрапинг после ${MAX_RETRIES} попыток`);
+  return false;
+}
+
 async function main() {
   console.log('╔════════════════════════════════════════╗');
-  console.log('║   🎬 Whop Pulse Monitor v3.0         ║');
+  console.log('║   🎬 Whop Pulse Monitor v3.1         ║');
   console.log('║   Continuous Monitoring Mode          ║');
+  console.log('║   + Enhanced Error Handling           ║');
   console.log('╚════════════════════════════════════════╝');
-  console.log(`⏱️  Интервал: ${process.env.SCRAPE_INTERVAL / 1000} секунд`);
+  console.log(`⏱️  Интервал: ${CYCLE_DELAY / 1000} секунд`);
+  console.log(`🔄 Повторов при ошибке: ${MAX_RETRIES}`);
+  console.log(`⏰ Таймаут загрузки: ${PAGE_TIMEOUT / 1000} секунд`);
   console.log(`🗄️  База данных: ${process.env.SUPABASE_URL}`);
   console.log('');
   
+  let cycleCount = 0;
+  
   // Запускаем непрерывно
   while (true) {
-    await scrapeWhopPulse();
-    console.log('\n⏳ Ожидание 60 секунд перед следующим циклом...\n');
-    await new Promise(resolve => setTimeout(resolve, 60000));
+    cycleCount++;
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`📅 Цикл #${cycleCount} | ${new Date().toLocaleString('ru-RU')}`);
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+    
+    await scrapeWithRetry();
+    
+    console.log(`\n⏳ Ожидание ${CYCLE_DELAY / 1000} секунд перед следующим циклом...\n`);
+    await new Promise(resolve => setTimeout(resolve, CYCLE_DELAY));
+    
+    // Принудительная сборка мусора каждые 10 циклов (если доступна)
+    if (cycleCount % 10 === 0 && global.gc) {
+      console.log('🧹 Запуск сборки мусора...');
+      global.gc();
+    }
   }
 }
 
+// Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('\n👋 Остановка скрапера...');
+  console.log('\n👋 Получен сигнал остановки (SIGINT)...');
+  console.log('🛑 Останавливаем скрапер...');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n👋 Получен сигнал остановки (SIGTERM)...');
+  console.log('🛑 Останавливаем скрапер...');
   process.exit(0);
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('💥 Критическая ошибка:', error.message);
-  process.exit(1);
+  console.error('💥 Критическая ошибка (uncaughtException):', error.message);
+  console.error(error.stack);
+  // Не завершаем процесс сразу, даем время на cleanup
+  setTimeout(() => process.exit(1), 1000);
 });
 
-main();
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 Необработанное отклонение промиса:', reason);
+  // Логируем, но продолжаем работу
+});
+
+// Запускаем
+main().catch(error => {
+  console.error('💥 Фатальная ошибка в main():', error);
+  process.exit(1);
+});
